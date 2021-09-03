@@ -47,8 +47,8 @@ def creturn(status_code, progress, success=None, error=None, logs=None, pass_bac
 
     return json.loads(json.dumps(assembled, default=defaultconverter))
 
-def sort_f(td):
-    return td['timestamp_usec']
+# def sort_f(td):
+#     return td['timestamp_usec']
 
 class ExtensionHandler:
 
@@ -62,22 +62,25 @@ class ExtensionHandler:
         self.progress = None
         self.success = None
         self.error = None
-        self.props = None
-        self.links = None
+        self.props = {}
+        self.links = {}
         self.callback = None
         self.error_details = None
     
-    def __init__(self):
-        self.refresh()    
+    def __init__(self, ignore_undeclared_return=True, max_retries_per_error_code=6):
+        self.refresh()
+        self.ignore_undelared_return = ignore_undeclared_return
+        self.max_retries_per_error_code = max_retries_per_error_code
         
     def declare_pass_back_data(self, pass_back_data):
-        print(f"setting pass_back_data")
         self.ops = pass_back_data.get('ops') or {}
         self.retries = pass_back_data.get('retries') or {}
-        print(f"Ops = {self.ops}, retries = {self.retries}")
+        self.props = pass_back_data.get("props") or {}
+        self.links = pass_back_data.get("links") or {}
+        print(f"Ops = {self.ops}, Retries = {self.retries}, Links = {self.links}, Props = {self.props}")
         
     def add_op(self, opkey, opvalue=True):
-        print(f'add op {opkey} with avlue {opvalue}')
+        print(f'add op {opkey} with value {opvalue}')
         self.ops[opkey] = opvalue
         
     def complete_op(self, opkey):
@@ -86,6 +89,14 @@ class ExtensionHandler:
             _ = self.ops.pop(opkey)
         except:
             pass
+
+    def add_props(self, props):
+        self.props.update(props)
+        return self.props
+
+    def add_links(self, links):
+        self.links.update(links)
+        return self.links
         
     def add_log(self, title, details={}, is_error=False):
         print(f'Adding Log with title {title}, error = {is_error}')
@@ -97,8 +108,8 @@ class ExtensionHandler:
         self.progress = progress
         self.success = success
         self.error = error_code
-        self.props = props
-        self.links = links
+        self.props.update(props or {})
+        self.links.update(links or {})
         self.callback = callback
         self.callback_sec = callback_sec
         self.error_details = error_details
@@ -111,15 +122,20 @@ class ExtensionHandler:
             pass_back_data['retries'] = self.retries
             this_retries = pass_back_data['retries'].get(self.error, 0) + 1
             pass_back_data['retries'][self.error] = this_retries
-            if this_retries < 15 and self.callback:
+            pass_back_data['props'] = self.props
+            pass_back_data['links'] = self.links
+            if this_retries < self.max_retries_per_error_code and self.callback:
                 self.error = None
                 self.error_details = None
                 if not self.callback_sec:
                     self.callback_sec = 2**this_retries                
 
-        elif not self.success:
+        elif not self.success and not self.ignore_undelared_return:
             self.error = "no_success_or_error"
             self.error_details = {"error": "Finish was called without either success or an error code being passed."}
+
+        elif not self.success:
+            self.success=True
 
 #       self.logs.sort(key=sort_f, reverse=True)
             
@@ -128,8 +144,7 @@ class ExtensionHandler:
             pass_back_data, None, self.props, self.links, self.callback_sec, self.error_details
         )
     
-
-# A decorator is a function that expects ANOTHER function as parameter
+# A decorator
 def ext(f=None, handler=None, op=None):
     import functools
     
@@ -149,6 +164,7 @@ def ext(f=None, handler=None, op=None):
             if handler.ret:
                 return None
             elif op and op not in handler.ops.keys():
+                # prin(f"Not trying function {f.__name__}, not in ops")
                 return None
         except:
             raise Exception(f"Must pass handler of type ExtensionHandler to ext decorator")
