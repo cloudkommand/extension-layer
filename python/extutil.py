@@ -1,6 +1,38 @@
 import time
 import json
 import datetime
+import re
+import base64
+
+NAME_REGEX = r"[a-zA-Z0-9\-\_]+"
+LOWERCASE_NAME_REGEX = r"[a-z0-9\-\_]+"
+
+def process_repo_id(repo_id, no_uppercase):
+    repo_provider = None
+    if repo_id.startswith("github.com/"):
+        _, owner_name, repo_name = repo_id.split("/")
+        repo_provider = "g"
+        if no_uppercase and not re.match(LOWERCASE_NAME_REGEX, repo_name.lower()):
+            repo_name = base64.b32encode(repo_name.encode("ascii")).decode("ascii").replace("=", "-")
+        elif not re.match(NAME_REGEX, repo_name):
+            repo_name = base64.b32encode(repo_name.encode("ascii")).decode("ascii").replace("=", "-")
+        
+        if no_uppercase and not re.match(LOWERCASE_NAME_REGEX, owner_name.lower()):
+            owner_name = base64.b32encode(owner_name.encode("ascii")).decode("ascii").replace("=", "-")
+        elif not re.match(NAME_REGEX, owner_name):
+            owner_name = base64.b32encode(owner_name.encode("ascii")).decode("ascii").replace("=", "-")
+
+    return repo_provider, owner_name, repo_name
+
+def component_safe_name(project_code, repo_id, component_name, no_underscores=False, no_uppercase=False):
+    provider, owner, repo = process_repo_id(repo_id, no_uppercase)
+
+    full_name = f"ck-{project_code}-{provider}-{owner}-{repo}-{component_name}"
+    if len(full_name) > 64:
+        full_name = f"ck-{hashlib.md5(full_name.encode()).hexdigest()}"
+        if len(full_name) > 64:
+            full_name = full_name[:64]
+    return full_name
 
 def remove_none_attributes(payload):
     """Assumes dict"""
@@ -102,6 +134,14 @@ class ExtensionHandler:
         print(f'Adding Log with title {title}, error = {is_error}')
         self.logs.append(gen_log(title, details, is_error))
 
+    def perm_error(self, error, progress=0):
+        print(f"Calling perm_error {error}")
+        return self.declare_return(200, progress, error_code=error, callback=False)
+
+    def retry_error(self, error, progress=0, callback_sec=0):
+        print(f'calling retry error {error}')
+        return self.declare_return(200, progress, error_code=error, callback_sec=callback_sec)
+
     def declare_return(self, status_code, progress, success=None, props=None, links=None, error_code=None, error_details=None, callback=True, callback_sec=0):
         print(f"success = {success}, error_code = {error_code}")
         self.status_code = status_code
@@ -136,6 +176,7 @@ class ExtensionHandler:
 
         elif not self.success:
             self.success=True
+            self.progress=100
 
 #       self.logs.sort(key=sort_f, reverse=True)
             
@@ -145,14 +186,15 @@ class ExtensionHandler:
         )
     
 # A decorator
-def ext(f=None, handler=None, op=None):
+def ext(f=None, handler=None, op=None, complete_op=True):
     import functools
     
     if not f:
         return functools.partial(
             ext,
             handler=handler,
-            op=op
+            op=op,
+            complete_op=complete_op
         )
 
     if not handler:
@@ -169,6 +211,9 @@ def ext(f=None, handler=None, op=None):
         except:
             raise Exception(f"Must pass handler of type ExtensionHandler to ext decorator")
 
-        return f(*args, **kwargs)
+        result = f(*args, **kwargs)
+        if complete_op and not handler.ret:
+            handler.complete_op(op)
+        return result
 
     return the_wrapper_around_the_original_function
