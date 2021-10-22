@@ -3,6 +3,7 @@ import json
 import datetime
 import re
 import base64
+import hashlib
 
 NAME_REGEX = r"[a-zA-Z0-9\-\_]+"
 LOWERCASE_NAME_REGEX = r"[a-z0-9\-\_]+"
