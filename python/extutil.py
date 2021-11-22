@@ -4,10 +4,15 @@ import datetime
 import re
 import base64
 import hashlib
+import uuid
+import os
+import boto3
+import botocore
 
 NAME_REGEX = r"[a-zA-Z0-9\-\_]+"
 LOWERCASE_NAME_REGEX = r"[a-z0-9\-\_]+"
 
+#Needs to be looked at, this seems dumb
 def process_repo_id(repo_id, no_uppercase):
     repo_provider = None
     if repo_id.startswith("github.com/"):
@@ -39,8 +44,17 @@ def remove_none_attributes(payload):
     """Assumes dict"""
     return {k: v for k, v in payload.items() if not v is None}
 
+def random_id():
+    return str(uuid.uuid4())
+
 def current_epoch_time_usec_num():
     return int(time.time() * 1000000)
+
+def lambda_env(key):
+    try:
+        return os.environ.get(key)
+    except Exception as e:
+        raise e
 
 def account_context(context):
     vals = context.invoked_function_arn.split(':')
@@ -80,6 +94,17 @@ def creturn(status_code, progress, success=None, error=None, logs=None, pass_bac
 
     return json.loads(json.dumps(assembled, default=defaultconverter))
 
+def handle_common_errors(error, extension_handler, text, progress, perm_errors=[]):
+    if error.response['Error']['Code'] in perm_errors:
+        extension_handler.add_log(f"{text}: {error.response['Error']['Code']}", {"error": str(error)}, True)
+        extension_handler.perm_error(f"{text}: {str(error)}", progress)
+        print(f"Permanent Error: {text}: {str(error)}")
+    else:
+        extension_handler.add_log(f"{text}: {error.response['Error']['Code']}", {"error": str(error)}, True)
+        extension_handler.retry_error(f"{text}: {str(error)}", progress)
+        print(f"Retry Error: {text}: {str(error)}")
+
+
 # def sort_f(td):
 #     return td['timestamp_usec']
 
@@ -97,20 +122,128 @@ class ExtensionHandler:
         self.error = None
         self.props = {}
         self.links = {}
+        self.state = {}
         self.callback = None
         self.error_details = None
+        self.children = {}
+        self.op = None
+        self.project_code = None
+        self.repo_id = None
+        self.bucket = None
+        self.component_name = None
     
     def __init__(self, ignore_undeclared_return=True, max_retries_per_error_code=6):
         self.refresh()
         self.ignore_undelared_return = ignore_undeclared_return
         self.max_retries_per_error_code = max_retries_per_error_code
+
+    def capture_event(self, event):
+        self.refresh()
+        if event.get("pass_back_data"):
+            self.declare_pass_back_data(event["pass_back_data"])
+        self.project_code = event.get("project_code")
+        self.repo_id = event.get("repo_id")
+        self.bucket = event.get("bucket")
+        self.component_name = event.get("component_name")
+        self.op = event.get("op")
         
     def declare_pass_back_data(self, pass_back_data):
-        self.ops = pass_back_data.get('ops') or {}
-        self.retries = pass_back_data.get('retries') or {}
-        self.props = pass_back_data.get("props") or {}
-        self.links = pass_back_data.get("links") or {}
+        pbd = pass_back_data.copy()
+        self.ops = pbd.pop('ops', {}) or {}
+        self.retries = pbd.pop('retries', {}) or {}
+        self.props = pbd.pop("props", {}) or {}
+        self.links = pbd.pop("links", {}) or {}
         print(f"Ops = {self.ops}, Retries = {self.retries}, Links = {self.links}, Props = {self.props}")
+        self.children = pbd
+        if pbd:
+            print(f"Set Children {self.children}")
+
+    def invoke_extension(self, arn, component_def, child_key, 
+            progress_start, progress_end, object_name=None, 
+            op=None, merge_props=False):
+        if child_key in ['ops', 'retries', 'props', 'links']:
+            raise Exception(f"Child key cannot be set to {child_key}. Please choose another key")
+        
+        l_client = boto3.client("lambda")
+        child_key = child_key or arn
+        
+        payload = bytes(json.dumps(remove_none_attributes({
+            "component_def": component_def,
+            "component_name": self.component_name,
+            "op": op or self.op,
+            "s3_object_name": object_name,
+            "pass_back_data": self.children.get(child_key),
+            "bucket": self.bucket,
+            "repo_id": self.repo_id,
+            "project_code": self.project_code
+        })), "utf-8")
+
+        ################################
+        # NEED TIMER ON THIS
+        ################################
+
+        try:
+            response = l_client.invoke(
+                FunctionName=arn,
+                InvocationType="RequestResponse",
+                LogType="None",
+                Payload=payload
+            )
+
+            if response.get("StatusCode") not in [200,202,204]:
+                print(f'Error = {response["Payload"].read()}')
+                raise Exception(f'Function Error = {response.get("FunctionError")}')
+
+            result = json.loads(response["Payload"].read())
+
+            logs = result.get("logs") or []
+            progress = result.get("progress") or 0
+            success = result.get("success")
+            error = result.get("error")
+            props = result.get("props") or {}
+            # state = result.get("state") Not Handling child state ATM
+            links = result.get("links") or {}
+            
+            true_progress = int(progress_start + (progress/100 * (progress_end - progress_start)))
+            self.logs.extend(logs)
+            if error:
+                self.perm_error(error, true_progress)
+                return False
+            else:
+                self.links.update(links)
+                if props:
+                    if isinstance(self.props.get(child_key), dict):
+                        self.props[child_key].update(props)
+                    else:
+                        self.props[child_key] = props
+                    if merge_props:
+                        self.props.update(props)
+
+                if not success:
+                    pass_back_data = result.get("pass_back_data")
+                    self.children[child_key] = pass_back_data
+                    self.retry_error(child_key, true_progress, callback_sec=result['callback_sec'])
+                    proceed=False
+
+                else:
+                    if child_key in self.children:
+                        del self.children[child_key]
+                    proceed= True
+
+
+        except botocore.exceptions.ClientError as e:
+            proceed=False
+            if e.response['Error']['Code'] in ["ResourceNotFoundException", "InvalidRequestContentException", "RequestTooLargeException"]:
+                self.add_log(f"Error Invoking {child_key}", {"error": str(e)}, True)
+                self.add_log(e.response['Error']['Code'], {"error": str(e)}, True)
+                self.perm_error(str(e), progress_start)
+            else:
+                self.add_log(f"Error Invoking {child_key}", {"error": str(e)}, True)
+                self.add_log(e.response['Error']['Code'], {"error": str(e)}, True)
+                self.retry_error(str(e), progress_start)
+        
+        return proceed
+
         
     def add_op(self, opkey, opvalue=True):
         print(f'add op {opkey} with value {opvalue}')
@@ -127,20 +260,21 @@ class ExtensionHandler:
         self.props.update(props)
         return self.props
 
+    def add_state(self, state):
+        self.state.update(state)
+        return self.state
+
     def add_links(self, links):
         self.links.update(links)
         return self.links
         
     def add_log(self, title, details={}, is_error=False):
-        print(f'Adding Log with title {title}, error = {is_error}')
         self.logs.append(gen_log(title, details, is_error))
 
     def perm_error(self, error, progress=0):
-        print(f"Calling perm_error {error}")
         return self.declare_return(200, progress, error_code=error, callback=False)
 
     def retry_error(self, error, progress=0, callback_sec=0):
-        print(f'calling retry error {error}')
         return self.declare_return(200, progress, error_code=error, callback_sec=callback_sec)
 
     def declare_return(self, status_code, progress, success=None, props=None, links=None, error_code=None, error_details=None, callback=True, callback_sec=0):
@@ -165,6 +299,8 @@ class ExtensionHandler:
             pass_back_data['retries'][self.error] = this_retries
             pass_back_data['props'] = self.props
             pass_back_data['links'] = self.links
+            if self.children:
+                pass_back_data.update(self.children)
             if this_retries < self.max_retries_per_error_code and self.callback:
                 self.error = None
                 self.error_details = None
@@ -183,7 +319,7 @@ class ExtensionHandler:
             
         return creturn(
             self.status_code, self.progress, self.success, self.error, self.logs, 
-            pass_back_data, None, self.props, self.links, self.callback_sec, self.error_details
+            pass_back_data, self.state or None, self.props, self.links, self.callback_sec, self.error_details
         )
     
 # A decorator
