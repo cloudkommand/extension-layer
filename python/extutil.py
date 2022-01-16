@@ -9,35 +9,48 @@ import os
 import boto3
 import botocore
 
-NAME_REGEX = r"[a-zA-Z0-9\-\_]+"
-LOWERCASE_NAME_REGEX = r"[a-z0-9\-\_]+"
+NAME_REGEX = r"^[a-zA-Z0-9\-\_]+$"
+LOWERCASE_NAME_REGEX = r"^[a-z0-9\-\_]+$"
+NO_UNDERSCORE_NAME_REGEX = r"^[a-zA-Z0-9\-]+$"
+NO_UNDERSCORE_LOWERCASE_NAME_REGEX = r"^[a-z0-9\-]+$"
 
-#Needs to be looked at, this seems dumb
-def process_repo_id(repo_id, no_uppercase):
+def safe_encode(string):
+    return base64.b32encode(string.encode("ascii")).decode("ascii").replace("=", "-")
+
+def safeval(string, no_underscores, no_uppercase):
+    if no_uppercase and no_underscores:
+        the_regex=NO_UNDERSCORE_LOWERCASE_NAME_REGEX
+    elif no_uppercase:
+        the_regex=LOWERCASE_NAME_REGEX
+    elif no_underscores:
+        the_regex=NO_UNDERSCORE_NAME_REGEX
+    else:
+        the_regex=NO_UNDERSCORE_LOWERCASE_NAME_REGEX
+
+    if not re.match(the_regex, string):
+        string = safe_encode(string).lower()
+
+    return string
+    
+def process_repo_id(repo_id, no_underscores, no_uppercase):
     repo_provider = None
     if repo_id.startswith("github.com/"):
         _, owner_name, repo_name = repo_id.split("/")
         repo_provider = "g"
-        if no_uppercase and not re.match(LOWERCASE_NAME_REGEX, repo_name.lower()):
-            repo_name = base64.b32encode(repo_name.encode("ascii")).decode("ascii").replace("=", "-")
-        elif not re.match(NAME_REGEX, repo_name):
-            repo_name = base64.b32encode(repo_name.encode("ascii")).decode("ascii").replace("=", "-")
-        
-        if no_uppercase and not re.match(LOWERCASE_NAME_REGEX, owner_name.lower()):
-            owner_name = base64.b32encode(owner_name.encode("ascii")).decode("ascii").replace("=", "-")
-        elif not re.match(NAME_REGEX, owner_name):
-            owner_name = base64.b32encode(owner_name.encode("ascii")).decode("ascii").replace("=", "-")
+        owner_name = safeval(owner_name, no_underscores, no_uppercase)
+        repo_name = safeval(repo_name, no_underscores, no_uppercase)
 
     return repo_provider, owner_name, repo_name
 
-def component_safe_name(project_code, repo_id, component_name, no_underscores=False, no_uppercase=False):
-    provider, owner, repo = process_repo_id(repo_id, no_uppercase)
+def component_safe_name(project_code, repo_id, component_name, no_underscores=False, no_uppercase=False, max_chars=64):
+    provider, owner, repo = process_repo_id(repo_id, no_underscores, no_uppercase)
+    component_name = safeval(component_name, no_underscores, no_uppercase)
 
     full_name = f"ck-{project_code}-{provider}-{owner}-{repo}-{component_name}"
-    if len(full_name) > 64:
+    if len(full_name) > max_chars:
         full_name = f"ck-{hashlib.md5(full_name.encode()).hexdigest()}"
-        if len(full_name) > 64:
-            full_name = full_name[:64]
+        if len(full_name) > max_chars:
+            full_name = full_name[:max_chars]
     return full_name
 
 def remove_none_attributes(payload):
@@ -161,19 +174,24 @@ class ExtensionHandler:
 
     def invoke_extension(self, arn, component_def, child_key, 
             progress_start, progress_end, object_name=None, 
-            op=None, merge_props=False):
+            op=None, merge_props=False, links_prefix=None):
+
+        if merge_props:
+            raise Exception("Cannot Merge Props")
         if child_key in ['ops', 'retries', 'props', 'links']:
             raise Exception(f"Child key cannot be set to {child_key}. Please choose another key")
         
         l_client = boto3.client("lambda")
         child_key = child_key or arn
+        op = op or self.op
         
         payload = bytes(json.dumps(remove_none_attributes({
             "component_def": component_def,
             "component_name": self.component_name,
-            "op": op or self.op,
+            "op": op,
             "s3_object_name": object_name,
             "pass_back_data": self.children.get(child_key),
+            "prev_state": {"props": self.props.get(child_key)} if self.props.get(child_key) else None,
             "bucket": self.bucket,
             "repo_id": self.repo_id,
             "project_code": self.project_code
@@ -211,19 +229,22 @@ class ExtensionHandler:
                 self.perm_error(error, true_progress)
                 return False
             else:
-                self.links.update(links)
-                if props:
-                    if isinstance(self.props.get(child_key), dict):
-                        self.props[child_key].update(props)
-                    else:
-                        self.props[child_key] = props
-                    if merge_props:
-                        self.props.update(props)
+                if op == "upsert":
+                    if links_prefix:
+                        links = {f"{links_prefix} {k}":v for k,v in links.items()} 
+                    self.links.update(links)
+                    if props:
+                        if isinstance(self.props.get(child_key), dict):
+                            self.props[child_key].update(props)
+                        else:
+                            self.props[child_key] = props
+                        if merge_props:
+                            self.props.update(props)
 
                 if not success:
                     pass_back_data = result.get("pass_back_data")
                     self.children[child_key] = pass_back_data
-                    self.retry_error(child_key, true_progress, callback_sec=result['callback_sec'])
+                    self.retry_error(f'{child_key} {pass_back_data.get("last_retry")}', true_progress, callback_sec=result['callback_sec'])
                     proceed=False
 
                 else:
@@ -304,6 +325,7 @@ class ExtensionHandler:
             if self.children:
                 pass_back_data.update(self.children)
             if this_retries < self.max_retries_per_error_code and self.callback:
+                pass_back_data['last_retry'] = self.error
                 self.error = None
                 self.error_details = None
                 if not self.callback_sec:
