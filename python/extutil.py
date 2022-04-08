@@ -8,6 +8,7 @@ import uuid
 import os
 import boto3
 import botocore
+import zipfile
 
 NAME_REGEX = r"^[a-zA-Z0-9\-\_]+$"
 LOWERCASE_NAME_REGEX = r"^[a-z0-9\-\_]+$"
@@ -25,7 +26,7 @@ def safeval(string, no_underscores, no_uppercase):
     elif no_underscores:
         the_regex=NO_UNDERSCORE_NAME_REGEX
     else:
-        the_regex=NO_UNDERSCORE_LOWERCASE_NAME_REGEX
+        the_regex=NAME_REGEX
 
     if not re.match(the_regex, string):
         string = safe_encode(string).lower()
@@ -68,6 +69,16 @@ def lambda_env(key):
         return os.environ.get(key)
     except Exception as e:
         raise e
+
+def create_zip(file_name, path):
+    ziph=zipfile.ZipFile(file_name, 'w', zipfile.ZIP_DEFLATED)
+    # ziph is zipfile handle
+    for root, dirs, files in os.walk(path):
+        for file in files:
+            ziph.write(os.path.join(root, file), 
+                       os.path.relpath(os.path.join(root, file), 
+                                       os.path.join(path, '')))
+    ziph.close()
 
 def account_context(context):
     vals = context.invoked_function_arn.split(':')
