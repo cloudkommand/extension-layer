@@ -9,6 +9,7 @@ import os
 import boto3
 import botocore
 import zipfile
+import fastjsonschema
 
 NAME_REGEX = r"^[a-zA-Z0-9\-\_]+$"
 LOWERCASE_NAME_REGEX = r"^[a-z0-9\-\_]+$"
@@ -38,6 +39,16 @@ def process_repo_id(repo_id, no_underscores, no_uppercase):
     if repo_id.startswith("github.com/"):
         _, owner_name, repo_name = repo_id.split("/")
         repo_provider = "g"
+        owner_name = safeval(owner_name, no_underscores, no_uppercase)
+        repo_name = safeval(repo_name, no_underscores, no_uppercase)
+    elif repo_id.startswith("bitbucket."):
+        _, owner_name, repo_name = repo_id.split("/")
+        repo_provider = "b"
+        owner_name = safeval(owner_name, no_underscores, no_uppercase)
+        repo_name = safeval(repo_name, no_underscores, no_uppercase)
+    elif repo_id.startswith("gitlab.com/"):
+        _, owner_name, repo_name = repo_id.split("/")
+        repo_provider = "l"
         owner_name = safeval(owner_name, no_underscores, no_uppercase)
         repo_name = safeval(repo_name, no_underscores, no_uppercase)
 
@@ -188,6 +199,41 @@ class ExtensionHandler:
             op=None, merge_props=False, links_prefix=None,
             ignore_props_links=False, synchronous=True):
 
+        schema = {
+            "type": "object",
+            "properties": {
+                "arn": {"type": "string"},
+                "component_def": {"type": "object"},
+                "child_key": {"type": "string"},
+                "progress_start": {"type": "number"},
+                "progress_end": {"type": "number"},
+                "object_name": {"type": ["string", "null"]},
+                "op": {"type": ["string", "null"]},
+                "merge_props": {"type": ["boolean", "null"]},
+                "links_prefix": {"type": ["string", "null"]},
+                "ignore_props_links": {"type": ["boolean", "null"]},
+                "synchronous": {"type": ["boolean", "null"]}
+            },
+            "required": ["arn", "component_def", "child_key", "progress_start", "progress_end"]
+        }
+
+        try:
+            fastjsonschema.validate(schema, {
+                "arn": arn,
+                "component_def": component_def,
+                "child_key": child_key,
+                "progress_start": progress_start,
+                "progress_end": progress_end,
+                "object_name": object_name,
+                "op": op,
+                "merge_props": merge_props,
+                "links_prefix": links_prefix,
+                "ignore_props_links": ignore_props_links,
+                "synchronous": synchronous
+            })
+        except:
+            raise Exception("Invalid invoke_extension parameters")
+
         if merge_props:
             raise Exception("Cannot Merge Props")
         if child_key in ['ops', 'retries', 'props', 'links']:
@@ -227,6 +273,7 @@ class ExtensionHandler:
 
             if synchronous:
                 result = json.loads(response["Payload"].read())
+                print(f"Invoke Result = {result}")
 
                 logs = result.get("logs") or []
                 progress = result.get("progress") or 0
@@ -294,6 +341,10 @@ class ExtensionHandler:
             pass
 
     def add_props(self, props):
+        #Restrict prop key names to alphanumeric, underscore, and hyphen
+        # invalid_prop_keys = list(filter(lambda x: (not re.match(NAME_REGEX, x)), props.keys()))
+        # if invalid_prop_keys:
+        #     raise Exception(f"Invalid Prop Key Names = {invalid_prop_keys}")
         self.props.update(props)
         return self.props
 
