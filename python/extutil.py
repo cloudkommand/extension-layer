@@ -17,7 +17,7 @@ NO_UNDERSCORE_NAME_REGEX = r"^[a-zA-Z0-9\-]+$"
 NO_UNDERSCORE_LOWERCASE_NAME_REGEX = r"^[a-z0-9\-]+$"
 
 def safe_encode(string):
-    return base64.b32encode(string.encode("ascii")).decode("ascii").replace("=", "-")
+    return base64.b32encode(string.encode("ascii")).decode("ascii").replace("=", "8")
 
 def safeval(string, no_underscores, no_uppercase):
     if no_uppercase and no_underscores:
@@ -39,18 +39,22 @@ def process_repo_id(repo_id, no_underscores, no_uppercase):
     if repo_id.startswith("github.com/"):
         _, owner_name, repo_name = repo_id.split("/")
         repo_provider = "g"
-        owner_name = safeval(owner_name, no_underscores, no_uppercase)
-        repo_name = safeval(repo_name, no_underscores, no_uppercase)
+        
     elif repo_id.startswith("bitbucket."):
         _, owner_name, repo_name = repo_id.split("/")
         repo_provider = "b"
-        owner_name = safeval(owner_name, no_underscores, no_uppercase)
-        repo_name = safeval(repo_name, no_underscores, no_uppercase)
+
     elif repo_id.startswith("gitlab.com/"):
         _, owner_name, repo_name = repo_id.split("/")
         repo_provider = "l"
-        owner_name = safeval(owner_name, no_underscores, no_uppercase)
-        repo_name = safeval(repo_name, no_underscores, no_uppercase)
+
+    elif len(repo_id.split("/")) == 5:
+        # We assume it is a Bitbucket Server Repo
+        _, _, owner_name, _, repo_name = repo_id.split("/")
+        repo_provider = "bs"
+
+    owner_name = safeval(owner_name, no_underscores, no_uppercase)
+    repo_name = safeval(repo_name, no_underscores, no_uppercase)
 
     return repo_provider, owner_name, repo_name
 
