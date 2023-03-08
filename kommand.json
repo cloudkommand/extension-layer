@@ -1,0 +1,11 @@
+{
+    "components": {
+        "layer": {
+            "type": "@lambda.layer",
+            "requirements": true
+        }
+    },
+    "repos": {
+        "lambda": "https://github.com/cloudkommand/lambda"
+    }
+}
