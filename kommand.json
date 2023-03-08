@@ -2,7 +2,7 @@
     "components": {
         "layer": {
             "type": "@lambda.layer",
-            "requirements": true
+            "requirements.txt": true
         }
     },
     "repos": {
