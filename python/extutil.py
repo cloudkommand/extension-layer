@@ -51,6 +51,7 @@ def process_repo_id(repo_id, no_underscores, no_uppercase):
     elif len(repo_id.split("/")) == 5:
         # We assume it is a Bitbucket Server Repo
         _, _, owner_name, _, repo_name = repo_id.split("/")
+        repo_name = repo_name.lower()
         repo_provider = "bs"
 
     owner_name = safeval(owner_name, no_underscores, no_uppercase)
