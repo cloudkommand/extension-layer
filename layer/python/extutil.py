@@ -11,6 +11,8 @@ import botocore
 import zipfile
 import fastjsonschema
 
+from urllib.parse import quote
+
 NAME_REGEX = r"^[a-zA-Z0-9\-\_]+$"
 LOWERCASE_NAME_REGEX = r"^[a-z0-9\-\_]+$"
 NO_UNDERSCORE_NAME_REGEX = r"^[a-zA-Z0-9\-]+$"
@@ -103,12 +105,13 @@ def account_context(context):
         "region": vals[3]
     }
 
-def gen_log(title, details, is_error=False):
+def gen_log(title, details, is_error=False, link=None):
     return {
         "title": title,
         "details": details,
         "timestamp_usec": current_epoch_time_usec_num(),
-        "is_error": is_error
+        "is_error": is_error,
+        "link": link
     }
 
 def defaultconverter(o):
@@ -362,7 +365,9 @@ class ExtensionHandler:
         return self.links
         
     def add_log(self, title, details={}, is_error=False):
-        self.logs.append(gen_log(title, details, is_error))
+        link = gen_log_link()
+        print(f"{title}: {details}")
+        self.logs.append(gen_log(title, details, is_error, link))
 
     def perm_error(self, error, progress=0):
         return self.declare_return(200, progress, error_code=error, callback=False)
@@ -371,7 +376,7 @@ class ExtensionHandler:
         return self.declare_return(200, progress, error_code=error, callback_sec=callback_sec)
 
     def declare_return(self, status_code, progress, success=None, props=None, links=None, error_code=None, error_details=None, callback=True, callback_sec=0):
-        print(f"success = {success}, error_code = {error_code}")
+        print(f"Calling back to CK, success = {success}, error_code = {error_code}")
         self.status_code = status_code
         self.progress = progress
         self.success = success
@@ -449,3 +454,10 @@ def ext(f=None, handler=None, op=None, complete_op=True):
         return result
 
     return the_wrapper_around_the_original_function
+
+def gen_log_link():
+    log_event_encoded = quote(quote(lambda_env("AWS_LAMBDA_LOG_STREAM_NAME"), safe=''), safe='').replace("%", "$")
+    region = lambda_env("AWS_DEFAULT_REGION")
+    # Get milliseconds since epoch
+    millis = int(round(time.time() * 1000)) - 50
+    return f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#logsV2:log-groups/log-group/$252Faws$252Flambda$252F{os.environ['AWS_LAMBDA_FUNCTION_NAME']}/log-events/{log_event_encoded}$3Fstart$3D{millis}"
