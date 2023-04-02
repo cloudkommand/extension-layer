@@ -44,20 +44,20 @@ def process_repo_id(repo_id, no_underscores, no_uppercase):
         folder = None
     repo_provider = None
     if base_repo_id.startswith("github.com/"):
-        _, owner_name, repo_name = repo_id.split("/")
+        _, owner_name, repo_name = base_repo_id.split("/")
         repo_provider = "g"
         
     elif base_repo_id.startswith("bitbucket."):
-        _, owner_name, repo_name = repo_id.split("/")
+        _, owner_name, repo_name = base_repo_id.split("/")
         repo_provider = "b"
 
     elif base_repo_id.startswith("gitlab.com/"):
-        _, owner_name, repo_name = repo_id.split("/")
+        _, owner_name, repo_name = base_repo_id.split("/")
         repo_provider = "l"
 
     elif len(base_repo_id.split("/")) == 5:
         # We assume it is a Bitbucket Server Repo
-        _, _, owner_name, _, repo_name = repo_id.split("/")
+        _, _, owner_name, _, repo_name = base_repo_id.split("/")
         repo_name = repo_name.lower()
         repo_provider = "bs"
 
