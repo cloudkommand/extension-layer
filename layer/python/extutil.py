@@ -37,20 +37,25 @@ def safeval(string, no_underscores, no_uppercase):
     return string
     
 def process_repo_id(repo_id, no_underscores, no_uppercase):
+    if "<" in repo_id:
+        base_repo_id, folder = repo_id.split("<")
+    else:
+        base_repo_id = repo_id
+        folder = None
     repo_provider = None
-    if repo_id.startswith("github.com/"):
+    if base_repo_id.startswith("github.com/"):
         _, owner_name, repo_name = repo_id.split("/")
         repo_provider = "g"
         
-    elif repo_id.startswith("bitbucket."):
+    elif base_repo_id.startswith("bitbucket."):
         _, owner_name, repo_name = repo_id.split("/")
         repo_provider = "b"
 
-    elif repo_id.startswith("gitlab.com/"):
+    elif base_repo_id.startswith("gitlab.com/"):
         _, owner_name, repo_name = repo_id.split("/")
         repo_provider = "l"
 
-    elif len(repo_id.split("/")) == 5:
+    elif len(base_repo_id.split("/")) == 5:
         # We assume it is a Bitbucket Server Repo
         _, _, owner_name, _, repo_name = repo_id.split("/")
         repo_name = repo_name.lower()
@@ -58,14 +63,19 @@ def process_repo_id(repo_id, no_underscores, no_uppercase):
 
     owner_name = safeval(owner_name, no_underscores, no_uppercase)
     repo_name = safeval(repo_name, no_underscores, no_uppercase)
+    folder = safeval(folder.replace("/", ""), no_underscores, no_uppercase) if folder else None
 
-    return repo_provider, owner_name, repo_name
+    return repo_provider, owner_name, repo_name, folder
 
 def component_safe_name(project_code, repo_id, component_name, no_underscores=False, no_uppercase=False, max_chars=64):
-    provider, owner, repo = process_repo_id(repo_id, no_underscores, no_uppercase)
+    provider, owner, repo, folder = process_repo_id(repo_id, no_underscores, no_uppercase)
     component_name = safeval(component_name, no_underscores, no_uppercase)
 
-    full_name = f"ck-{project_code}-{provider}-{owner}-{repo}-{component_name}"
+    if folder:
+        full_name = f"ck-{project_code}-{provider}-{owner}-{repo}-{folder}-{component_name}"
+    else:
+        full_name = f"ck-{project_code}-{provider}-{owner}-{repo}-{component_name}"
+    
     if len(full_name) > max_chars:
         full_name = f"ck-{hashlib.md5(full_name.encode()).hexdigest()}"
         if len(full_name) > max_chars:
